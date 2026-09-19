@@ -1,0 +1,16 @@
+{
+  "local_url": "http://127.0.0.1:8080",
+  "local_model": "local",
+  "local_enabled": false,
+  "timeout_seconds": 90,
+  "max_context_chars": 10000,
+  "max_output_tokens": 900,
+  "cloud_enabled": false,
+  "gemini_model": "",
+  "input_usd_per_million": 0,
+  "output_usd_per_million": 0,
+  "monthly_budget_usd": 0,
+  "per_job_budget_usd": 0,
+  "pricing_confirmed": false
+}
+

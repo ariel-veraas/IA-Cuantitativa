@@ -1,0 +1,10 @@
+{
+  "name": "Revisión inicial de proveedor",
+  "criteria": [
+    {"id":"soporte","label":"Menciona la frase soporte remoto","kind":"phrase","phrase":"soporte remoto","weight":20,"required":false},
+    {"id":"entrega","label":"Entrega declarada dentro de 15 días","kind":"number_max","field":"Plazo de entrega","unit":"días","maximum":15,"weight":30,"required":true},
+    {"id":"garantia","label":"Menciona la garantía de 12 meses","kind":"phrase","phrase":"Garantía: 12 meses","weight":20,"required":false},
+    {"id":"cobertura","label":"La propuesta incluye atención de urgencias fuera del horario habitual sin costo adicional","kind":"semantic","weight":30,"required":true}
+  ]
+}
+

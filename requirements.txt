@@ -1,0 +1,4 @@
+# Optional document readers. The application and TXT/Markdown work without packages.
+pypdf==6.10.0
+python-docx==1.2.0
+

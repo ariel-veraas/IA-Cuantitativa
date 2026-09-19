@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IA Cuantitativa · Tu espacio local</title>
+<link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="Inicio"><span class="brand-mark">iq</span><span>IA Cuantitativa<small>LABORATORIO LOCAL</small></span></a>
+  <nav aria-label="Secciones">
+    <button class="nav active" data-view="evaluate" aria-current="page"><span>01</span> Evaluar documento</button>
+    <button class="nav" data-view="activity"><span>02</span> Actividad</button>
+    <button class="nav" data-view="skills"><span>03</span> Capacidades</button>
+    <button class="nav" data-view="settings"><span>04</span> Configuración</button>
+  </nav>
+  <div class="sidebar-note"><span class="dot"></span> En este equipo<p>Tus archivos se procesan localmente. La asistencia externa requiere habilitación explícita.</p></div>
+  <p class="version">ALFA 0.1 · USO INDIVIDUAL</p>
+</aside>
+<main>
+  <header class="topbar"><span>ESPACIO DE TRABAJO</span><span id="engine-status" class="badge">Sin modelo conectado</span></header>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <section id="view-evaluate" class="view">
+    <div class="heading"><div><p class="eyebrow">DOCUMENTOS → CRITERIOS → EVIDENCIA</p><h1>Revisá con criterio.</h1><p class="lede">Una evaluación clara. Cada resultado, con su fuente.</p></div><button id="demo" class="secondary">Probar con un ejemplo <span aria-hidden="true">↗</span></button></div>
+    <div class="workspace">
+      <div class="steps">
+        <section class="card"><div class="card-title"><span class="step">1</span><h2>Elegí el documento</h2></div>
+          <label class="dropzone" for="file"><span class="file-icon" aria-hidden="true">＋</span><strong>Agregar un archivo</strong><span>TXT, Markdown, PDF digital o DOCX · hasta 8 MB</span><input id="file" type="file" accept=".txt,.md,.pdf,.docx"></label>
+          <label for="documents">O usá uno de tus documentos</label><select id="documents"><option value="">Seleccioná un documento</option></select>
+          <div id="doc-info" class="muted"></div>
+          <details><summary>Pegar texto directamente</summary><label for="paste">Contenido del documento</label><textarea id="paste" rows="5" placeholder="Pegá el texto que querés evaluar…"></textarea><button id="save-text" class="secondary small">Usar este texto</button></details>
+        </section>
+        <section class="card"><div class="card-title"><span class="step">2</span><h2>Definí qué revisar</h2><button id="import-button" class="link">Importar rúbrica</button><input id="rubric-file" type="file" accept=".json" hidden></div>
+          <label for="rubric-name">Nombre de la rúbrica</label><input id="rubric-name" maxlength="120" value="Mi evaluación documental">
+          <div id="criteria"></div><div class="row-actions"><button id="add-criterion" class="secondary small">＋ Agregar criterio</button><button id="save-rubric" class="link">Guardar rúbrica</button></div>
+          <p class="hint">Las reglas comprueban datos explícitos. La interpretación necesita un modelo y revisión humana.</p>
+        </section>
+        <section class="card"><div class="card-title"><span class="step">3</span><h2>Evaluá el documento</h2></div>
+          <label for="mode">Cómo querés procesarlo</label><select id="mode"><option value="rules">Reglas locales · sin modelo</option value="local">Reglas + modelo local</option></select>
+          <label class="check"><input id="cloud" type="checkbox" disabled><span>Permitir Gemini para criterios pendientes</span></label><p id="cloud-info" class="hint">La asistencia externa está desactivada.</p>
+          <button id="evaluate" class="primary full">Iniciar evaluación <span aria-hidden="true">→</span></button>
+        </section>
+      </div>
+      <section class="result-column" aria-label="Resultado de la evaluación">
+        <div class="result-header"><p class="eyebrow">RESULTADO</p><span class="badge" id="job-status">Sin evaluación</span></div>
+        <div id="empty-result" class="empty-result"><div class="empty-art" aria-hidden="true"><span>✓</span><span>?</span><span>✓</span></div><h2>La evidencia va primero.</h2><p>Cargá un archivo y elegí tus criterios.<br>Acá vas a ver qué cumple, qué falta<br>y qué necesita una segunda mirada.</p><p class="hint">El ejemplo funciona sin instalar un modelo.</p></div>
+        <div id="result" hidden></div>
+      </section>
+    </div>
+  </section>
+  <section id="view-activity" class="view" hidden><p class="eyebrow">HISTORIAL LOCAL</p><h1>Tu trabajo queda guardado.</h1><p class="lede">Consultá resultados y retomá evaluaciones interrumpidas.</p><div id="activity-list"></div></section>
+  <section id="view-skills" class="view" hidden><p class="eyebrow">CAPACIDADES</p><h1>Procedimientos que podés reutilizar.</h1><p class="lede">La primera skill ya tiene un flujo definido y resultados verificables.</p><div id="skill-list"></div><div class="card"><h2>Una rúbrica para cada trabajo</h2><p>Podés definir criterios y guardar la rúbrica para otras evaluaciones. En esta alfa, todas usan la skill de evaluación documental.</p><p class="muted">Enseñar nuevos procedimientos conversando, activarlos con pruebas y administrar versiones llegará en una etapa posterior.</p></div></section>
+  <section id="view-settings" class="view" hidden><p class="eyebrow">CONFIGURACIÓN</p><h1>Conectá tu motor local.</h1><p class="lede">Esta alfa se conecta a un servidor llama.cpp que ya esté ejecutándose en tu equipo.</p>
+    <div class="settings-grid"><section class="card"><h2>Modelo en este equipo</h2><form id="local-settings"><label for="local-url">Dirección de llama.cpp</label><input id="local-url" value="http://127.0.0.1:8080" required><label for="local-model">Nombre o alias del modelo</label><input id="local-model" value="local" required maxlength="160"><label class="check"><input id="local-enabled" type="checkbox"><span>Habilitar el modelo local</span></label><button class="primary" type="submit">Guardar conexión</button></form><p class="hint">Guardar no descarga ni inicia un modelo. Encontrás los pasos de laboratorio en LEEME.md.</p></section>
+    <section class="card"><h2>Asistencia externa</h2><p id="external-status"></p><div id="usage"></div><p class="hint">La habilitación y las tarifas se configuran en config.json. La clave se lee desde GEMINI_API_KEY y nunca se envía a esta pantalla.</p><p class="hint">El registro controla llamadas de esta aplicación. No es un límite de facturación de la cuenta del proveedor.</p></section></div>
+    <section class="card"><h2>Qué incluye esta versión</h2><p>Archivos locales, rúbricas, reglas, conexión a modelos, evidencia y registro de trabajos. Todavía no incluye OCR, Drive, chat general, descarga automática de modelos ni acceso de varios usuarios.</p></section>
+  </section>
+  <footer>IA Cuantitativa · Un proyecto en construcción, con resultados que se pueden revisar.</footer>
+</main>
+</body></html>

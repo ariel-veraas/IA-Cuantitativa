@@ -1,0 +1,11 @@
+{
+  "id": "evaluar-documento",
+  "version": "0.1.0",
+  "display_name": "Evaluar un documento",
+  "description": "Aplicá criterios, encontrá evidencia y señalá qué falta revisar.",
+  "entrypoint": "SKILL.md",
+  "handler": "document_evaluation",
+  "tools": ["extract_text", "retrieve_evidence", "check_rule", "evaluate_criterion"],
+  "allows_scripts": false
+}
+
