@@ -12,4 +12,3 @@ exit /b 0
 echo No se completo la instalacion. Revisa que tengas Python 3.11 o superior y conexion a internet.
 pause
 exit /b 1
-

@@ -132,4 +132,3 @@ class Store:
         return {'month_utc':month(),'accounted_usd':sum(r['amount'] for r in items)/1000000,
                 'unconfirmed_usd':sum(r['amount'] for r in items if r['state']!='settled')/1000000,
                 'calls':len(items),'ledger':items}
-

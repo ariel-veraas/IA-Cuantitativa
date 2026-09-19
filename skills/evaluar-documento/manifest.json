@@ -8,4 +8,3 @@
   "tools": ["extract_text", "retrieve_evidence", "check_rule", "evaluate_criterion"],
   "allows_scripts": false
 }
-

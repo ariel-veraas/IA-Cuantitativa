@@ -72,4 +72,3 @@ def aggregate(criteria,rows):
     return {'earned_weight':earned,'total_weight':total,'pending_weight':pending,
             'score_min':round(100*earned/total,2),'score_max':round(100*(earned+pending)/total,2),
             'decision':decision,'complete':len(rows)==len(criteria) and pending==0}
-

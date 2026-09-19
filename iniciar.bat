@@ -11,4 +11,3 @@ if errorlevel 1 (
   echo Necesitas Python 3.11 o superior. Consulta LEEME.md.
   pause
 )
-

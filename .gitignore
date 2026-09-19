@@ -7,4 +7,3 @@ data/
 *.sqlite*
 dist/
 .DS_Store
-

@@ -87,4 +87,3 @@ def retrieve(document,query,max_chars=10000):
         selected.append(s);used+=len(s['text'])
     selected.sort(key=lambda s:int(s['id'][1:]))
     return selected
-
