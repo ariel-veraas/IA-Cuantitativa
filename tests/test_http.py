@@ -31,7 +31,7 @@ class HttpTests(unittest.TestCase):
             return response.status,result
 
     def test_ui_and_demo_end_to_end(self):
-        status,html=self.request('/');self.assertEqual(status,200);self.assertIn(b'Revis',html)
+        status,html=self.request('/evaluate');self.assertEqual(status,200);self.assertIn(b'Revis',html)
         _,demo=self.request('/api/demo',{})
         code,job=self.request('/api/jobs',{'document_id':demo['document']['id'],'rubric':demo['rubric']})
         self.assertEqual(code,201)

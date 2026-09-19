@@ -28,6 +28,8 @@ class Config:
     local_url: str = 'http://127.0.0.1:8080'
     local_model: str = 'local'
     local_enabled: bool = False
+    local_backend: str = 'llamacpp'
+    context_tokens: int = 4096
     timeout_seconds: int = 90
     max_context_chars: int = 10000
     max_output_tokens: int = 900
@@ -41,6 +43,10 @@ class Config:
 
     def validate(self):
         loopback_url(self.local_url)
+        if self.local_backend not in ('llamacpp','ollama'):
+            raise ValueError('Motor local desconocido.')
+        if type(self.context_tokens) is not int or not 2048<=self.context_tokens<=8192:
+            raise ValueError('El contexto local debe estar entre 2048 y 8192 tokens.')
         for name in ('local_enabled', 'cloud_enabled', 'pricing_confirmed'):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f'{name} debe ser verdadero o falso.')

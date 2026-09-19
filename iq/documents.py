@@ -39,33 +39,16 @@ def extract(filename,data):
                 text=page.extract_text() or ''
                 if not text.strip(): warnings.append(f'Página {n} sin texto extraíble; podría requerir OCR.')
                 else: units.append((f'Página {n}',text.strip()))
-        elif ext=='.docx':
-            try: from docx import Document
-            except ImportError: raise UserError('Falta el lector DOCX. Ejecutá instalar.bat o usá TXT.')
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                if sum(x.file_size for x in archive.infolist())>40*1024*1024:
-                    raise UserError('El DOCX expandido supera el límite de 40 MB.')
-            doc=Document(io.BytesIO(data))
-            from docx.table import Table
-            from docx.text.paragraph import Paragraph
-            n=0
-            for node in doc.element.body.iterchildren():
-                n+=1
-                if node.tag.endswith('}p'):
-                    text=Paragraph(node,doc).text.strip()
-                    if text: units.append((f'Bloque {n}',text))
-                elif node.tag.endswith('}tbl'):
-                    table=Table(node,doc)
-                    text='\n'.join(' | '.join(c.text for c in row.cells) for row in table.rows)
-                    if text.strip(): units.append((f'Tabla en bloque {n}',text))
-            warnings.append('DOCX: se leen cuerpo y tablas; no encabezados, pies ni cuadros de texto.')
-        else: raise UserError('Usá TXT, Markdown, PDF digital o DOCX.')
+        elif ext in ('.docx','.csv','.xlsx'):
+            from .office import read_docx,read_csv,read_xlsx
+            units,warnings={'.docx':read_docx,'.csv':read_csv,'.xlsx':read_xlsx}[ext](data)
+        else: raise UserError('Usá TXT, Markdown, PDF digital, DOCX, CSV o XLSX.')
     except UserError: raise
     except UnicodeDecodeError: raise UserError('El texto debe estar guardado en UTF-8.')
     except Exception: raise UserError('No se pudo leer el archivo. Comprobá su formato o exportalo a TXT.')
     count=sum(len(t) for _,t in units)
     if not count: raise UserError('No hay texto legible. Los documentos escaneados necesitan OCR, todavía no incluido.')
-    if count>MAX_CHARS: raise UserError('El documento supera los 200.000 caracteres de esta alfa.')
+    if count>MAX_CHARS: raise UserError('El documento supera los 200.000 caracteres admitidos.')
     chunks=[]
     for location,text in units:
         # Preserve exact substring; overlap prevents simple boundaries losing terms.

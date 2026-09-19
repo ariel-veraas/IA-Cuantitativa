@@ -46,11 +46,26 @@ class LocalProvider:
     def __init__(self,config,transport=post_json):self.config=config;self.transport=transport
 
     def evaluate(self,system,user):
+        return self.generate(system,user,SCHEMA)
+
+    def generate(self,system,user,schema):
         if not self.config.local_enabled:raise UserError('El motor local todavía no está configurado.')
+        if self.config.local_backend=='ollama':
+            payload={'model':self.config.local_model,'messages':[{'role':'system','content':system},{'role':'user','content':user}],
+                'stream':False,'think':False,'keep_alive':'30m','format':schema,
+                'options':{'temperature':0,'num_predict':self.config.max_output_tokens,'num_ctx':self.config.context_tokens}}
+            data=self.transport(loopback_url(self.config.local_url)+'/api/chat',payload,timeout=self.config.timeout_seconds)
+            try:
+                if data.get('done') is not True or data.get('done_reason','stop')!='stop':raise ValueError()
+                answer=json.loads(data['message']['content'])
+            except (KeyError,TypeError,ValueError):raise UserError('El motor no completó una respuesta válida. Probá un pedido más corto.') from None
+            return answer,{'provider':'local','backend':'ollama','model':data.get('model',self.config.local_model),
+                'usage':{'prompt_tokens':data.get('prompt_eval_count',0),'completion_tokens':data.get('eval_count',0)},
+                'load_seconds':data.get('load_duration',0)/1e9,'generation_seconds':data.get('eval_duration',0)/1e9}
         payload={'model':self.config.local_model,'messages':[{'role':'system','content':system},{'role':'user','content':user}],
             'temperature':0,'max_tokens':self.config.max_output_tokens,'stream':False,
             'chat_template_kwargs':{'enable_thinking':False},
-            'response_format':{'type':'json_object','schema':SCHEMA}}
+            'response_format':{'type':'json_object','schema':schema}}
         data=self.transport(loopback_url(self.config.local_url)+'/v1/chat/completions',payload,timeout=self.config.timeout_seconds)
         try:
             choice=data['choices'][0]
@@ -73,6 +88,9 @@ class GeminiProvider:
     def __init__(self,config,store,transport=post_json):self.config=config;self.store=store;self.transport=transport
 
     def evaluate(self,system,user,job_id,cid):
+        return self.generate(system,user,job_id,cid,SCHEMA)
+
+    def generate(self,system,user,job_id,cid,schema):
         cfg=self.config
         if not cfg.cloud_enabled:raise UserError('La asistencia externa está desactivada.')
         cfg.validate()
@@ -83,7 +101,7 @@ class GeminiProvider:
         payload={'systemInstruction':{'parts':[{'text':system}]},
             'contents':[{'role':'user','parts':[{'text':user}]}],
             'generationConfig':{'temperature':0,'candidateCount':1,'maxOutputTokens':cfg.max_output_tokens,
-                'thinkingConfig':{'thinkingBudget':0},'responseMimeType':'application/json','responseSchema':SCHEMA}}
+                'thinkingConfig':{'thinkingBudget':0},'responseMimeType':'application/json','responseSchema':schema}}
         count=self.transport(base+':countTokens',{'generateContentRequest':{'model':'models/'+cfg.gemini_model,**payload}},headers,cfg.timeout_seconds)
         tokens=count.get('totalTokens')
         if type(tokens) is not int or not 0<tokens<=30000:raise UserError('No se pudo validar el tamaño de la consulta externa.')

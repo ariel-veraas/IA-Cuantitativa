@@ -11,7 +11,7 @@ const {chromium}=require(process.env.CODEX_PRIMARY_RUNTIME_NODE_MODULES
   const page=await browser.newPage({viewport:{width:1440,height:1050}});
   const errors=[];let dialogs=0;
   page.on('pageerror',e=>errors.push(e.message));page.on('dialog',async d=>{dialogs++;await d.dismiss();});
-  await page.goto(process.env.IQ_TEST_URL||'http://127.0.0.1:8765');
+  await page.goto(process.env.IQ_TEST_URL||'http://127.0.0.1:8765/evaluate');
   await page.waitForFunction(()=>document.querySelector('#criteria').children.length===1);
   await page.locator('#demo').click();
   await page.waitForFunction(()=>document.querySelector('#criteria').children.length===4);

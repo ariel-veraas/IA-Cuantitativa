@@ -67,7 +67,7 @@ function renderState(){
  $('external-status').textContent=state.config.cloud_enabled?'Gemini habilitado; cada trabajo requiere marcar la opción de asistencia.':'Gemini está apagado. No se envían archivos a proveedores externos.';
  $('usage').replaceChildren(el('p',`Uso contabilizado este mes: USD ${state.usage.accounted_usd.toFixed(6)}`),el('p',`Reservas sin consumo confirmado: USD ${state.usage.unconfirmed_usd.toFixed(6)}`),el('p',`Solicitudes generativas registradas: ${state.usage.calls}`));
 }
-async function refresh(){state=await api('/api/state');renderState();clearTimeout(timer);if(state.jobs.some(j=>['running','queued'].includes(j.status)))timer=setTimeout(guarded(refresh),900);}
+async function refresh(){state=await api('/api/state');state.jobs=state.jobs.filter(j=>j.payload.rubric);renderState();clearTimeout(timer);if(state.jobs.some(j=>['running','queued'].includes(j.status)))timer=setTimeout(guarded(refresh),900);}
 async function fileToBase64(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=()=>reject(Error('No se pudo leer el archivo.'));reader.readAsDataURL(file);});}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>view(n.dataset.view));
 $('add-criterion').onclick=()=>addCriterion();$('documents').onchange=docInfo;

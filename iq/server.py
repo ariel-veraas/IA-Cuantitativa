@@ -1,4 +1,4 @@
-"""Loopback-only development server. Deliberately not a shared production host."""
+"""Loopback-only desktop server. Not a shared production host."""
 import argparse
 import json
 import secrets
@@ -10,6 +10,7 @@ from .app import Application
 from .config import ROOT
 from .domain import UserError
 from .evaluator import markdown_report
+from .conversation import conversation_report
 
 MAX_BODY=12*1024*1024
 
@@ -61,18 +62,39 @@ class Handler(BaseHTTPRequestHandler):
         if not self.permitted():return
         url=urlsplit(self.path);path=url.path;app=self.server.app
         assets={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
+        assets.update({'/evaluate':('evaluate.html','text/html; charset=utf-8'),'/workspace.js':('workspace.js','text/javascript; charset=utf-8'),'/workspace.css':('workspace.css','text/css; charset=utf-8')})
         if path in assets:
             file,mime=assets[path];return self.send(200,(ROOT/'iq'/'static'/file).read_bytes(),mime)
         if path=='/api/session':return self.send(200,{'token':self.server.session})
+        if path=='/api/health':return self.send(200,{'application':'ia-cuantitativa','version':'1.0.0'})
         if not self.authorized():return
         try:
             if path=='/api/state':return self.send(200,app.state())
+            if path=='/api/hardware':
+                from .diagnostics import hardware
+                return self.send(200,hardware())
+            if path=='/api/backup':
+                import tempfile,sqlite3,zipfile,io
+                with tempfile.TemporaryDirectory() as directory:
+                    target=ROOT.__class__(directory)/'iq.sqlite3'
+                    with app.store.db() as source:
+                        destination=sqlite3.connect(target)
+                        try:source.backup(destination)
+                        finally:destination.close()
+                    content=io.BytesIO()
+                    with zipfile.ZipFile(content,'w',compression=zipfile.ZIP_DEFLATED) as z:z.write(target,'iq.sqlite3')
+                return self.send(200,content.getvalue(),'application/zip',attachment='ia-cuantitativa-respaldo.zip')
+            if path.startswith('/api/conversations/'):
+                return self.send(200,app.capabilities.conversation(path.split('/')[-1]))
+            if path.startswith('/api/jobs/') and not path.endswith('/export'):
+                return self.send(200,app.store.job(path.split('/')[-1]))
             if path.startswith('/api/documents/'):
                 return self.send(200,app.store.document(path.split('/')[-1]))
             if path.startswith('/api/jobs/') and path.endswith('/export'):
                 job=app.store.job(path.split('/')[-2]);fmt=parse_qs(url.query).get('format',['md'])[0]
                 if fmt=='json':return self.send(200,job,attachment=f'evaluacion-{job["id"][:8]}.json')
-                return self.send(200,markdown_report(job),'text/markdown; charset=utf-8',f'evaluacion-{job["id"][:8]}.md')
+                report=conversation_report(job) if job['payload'].get('kind')=='conversation' else markdown_report(job)
+                return self.send(200,report,'text/markdown; charset=utf-8',f'informe-{job["id"][:8]}.md')
             self.send(404,{'error':'Ruta no encontrada.'})
         except UserError as exc:self.send(404,{'error':str(exc)})
 
@@ -92,6 +114,16 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/demo':return self.send(201,app.demo())
             if path=='/api/jobs':return self.send(201,app.submit(data))
             if path=='/api/settings/local':return self.send(200,app.configure_local(data))
+            if path=='/api/settings/cloud':return self.send(200,app.configure_cloud(data))
+            if path=='/api/chat':return self.send(201,app.chat(data))
+            if path=='/api/engine/prepare':return self.send(202,app.engine.prepare(data.get('profile','balanced')))
+            if path=='/api/engine/pause':return self.send(200,app.engine.pause())
+            if path=='/api/capabilities':return self.send(201,app.capabilities.save(data))
+            if path=='/api/capabilities/activate':return self.send(200,app.capabilities.activate(data.get('id'),data.get('version')))
+            if path=='/api/documents/delete':return self.send(200,app.delete_document(data.get('id')))
+            if path=='/api/conversations/delete':return self.send(200,app.delete_conversation(data.get('id')))
+            if path=='/api/shutdown':
+                self.send(200,{'closing':True});threading.Thread(target=self.server.shutdown,daemon=True).start();return
             if path.startswith('/api/jobs/'):
                 parts=path.split('/');id=parts[-2]
                 if parts[-1]=='cancel':app.store.cancel(id);return self.send(200,app.store.job(id))
@@ -111,7 +143,7 @@ def create_server(port=8765,data_dir=None,config=None):
 
 
 def main():
-    parser=argparse.ArgumentParser(description='IA Cuantitativa — alfa local')
+    parser=argparse.ArgumentParser(description='IA Cuantitativa — asistente local')
     parser.add_argument('--port',type=int,default=8765)
     parser.add_argument('--no-browser',action='store_true')
     parser.add_argument('--data-dir')
@@ -119,7 +151,7 @@ def main():
     try:server=create_server(args.port,args.data_dir)
     except (OSError,ValueError) as exc:parser.exit(1,f'No se pudo iniciar: {exc}\n')
     url=f'http://127.0.0.1:{server.server_port}'
-    print(f'IA Cuantitativa 0.1 — {url}\nCerrá con Ctrl+C. Los datos quedan en este equipo.',flush=True)
+    print(f'IA Cuantitativa 1.0 — {url}\nCerrá desde la aplicación o con Ctrl+C.',flush=True)
     if not args.no_browser:threading.Timer(.5,lambda:webbrowser.open(url)).start()
     try:server.serve_forever()
     except KeyboardInterrupt:pass
