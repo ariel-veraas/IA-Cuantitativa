@@ -1,18 +1,26 @@
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
+
+# run.py puts vendor/ on sys.path before the packaged app ever imports pypdf; tests
+# import it directly (to build a synthetic PDF fixture) and otherwise silently skip
+# the PDF test instead of exercising the exact reader the shipped app uses.
+sys.path.insert(0,str(Path(__file__).resolve().parent.parent/'vendor'))
 from iq.config import Config, loopback_url, ROOT
-from iq.documents import extract, retrieve
-from iq.domain import UserError, validate_rubric, aggregate
+from iq.documents import extract, retrieve, _bm25_scores
+from iq.domain import UserError, validate_rubric, aggregate, estimate_complexity, needs_external_info
 from iq.evaluator import check_rule, validate_answer, markdown_report
 from iq.providers import LocalProvider, GeminiProvider
+from iq import distill
 from iq.skills import SkillRegistry
 from iq.store import Store
 from iq.app import Application
@@ -66,6 +74,25 @@ class RulesTests(unittest.TestCase):
         self.assertFalse(summary['complete'])
 
 
+class ComplexityTests(unittest.TestCase):
+    def test_short_factual_requests_stay_fast(self):
+        for msg in ('hola','cuanto es 2+2','cual es el plazo de entrega'):
+            self.assertFalse(estimate_complexity(msg,document_count=1),msg)
+
+    def test_analytical_or_multi_document_requests_trigger_reasoning(self):
+        self.assertTrue(estimate_complexity('cosa cualquiera',document_count=2))
+        self.assertTrue(estimate_complexity('Compara estos documentos y explica las diferencias'))
+        self.assertTrue(estimate_complexity('x'*500))
+        self.assertTrue(estimate_complexity('pregunta uno? pregunta dos?'))
+
+    def test_needs_external_info_only_for_live_or_current_requests(self):
+        self.assertFalse(needs_external_info('Cual es el plazo de entrega segun el contrato?'))
+        self.assertFalse(needs_external_info('Resumime este documento'))
+        self.assertTrue(needs_external_info('Cual es el precio de mercado actual del dolar?'))
+        self.assertTrue(needs_external_info('Buscá en la web la última versión de esta norma'))
+        self.assertTrue(needs_external_info('Que noticias hay hoy sobre esto'))
+
+
 class DocumentTests(unittest.TestCase):
     def test_retrieval_budget_preserves_quotes(self):
         d=document('Otros datos.\n\nSoporte nocturno incluido.\n\nInformación adicional.')
@@ -76,6 +103,38 @@ class DocumentTests(unittest.TestCase):
     def test_unknown_format_and_empty_rejected(self):
         for name,body in [('bad.exe',b'hello'),('blank.txt',b'   '),('bad.txt',b'\xff')]:
             with self.assertRaises(UserError):extract(name,body)
+
+    def test_bm25_matches_whole_words_not_substrings(self):
+        # Regression for the old naive-substring ranking, which let a short query term
+        # match inside an unrelated longer word (e.g. "cat" inside "categoria").
+        d=document('Aca hay una categoria general.\n\nHabria que concatenar los textos.')
+        self.assertEqual(_bm25_scores(d['segments'],{'cat'}),[0.0,0.0])
+
+    def test_bm25_ranks_the_segment_with_all_query_terms_first(self):
+        d=document('Clima variable en la zona.\n\nEl soporte tecnico incluye guardia nocturna.\n\nSin relacion alguna.')
+        selected=retrieve(d,'soporte guardia nocturna',60)
+        self.assertEqual(selected[0]['text'],'El soporte tecnico incluye guardia nocturna.')
+
+    def test_embedding_rerank_finds_semantic_match_with_no_shared_words(self):
+        class FakeProvider:
+            calls=0
+            vectors={'emergencia critica que no puede esperar':[1.0,0.0],
+                     'Procedimiento de rutina para mantenimiento habitual.':[0.0,1.0],
+                     'Este es un caso urgente que requiere atencion inmediata.':[0.95,0.05],
+                     'Otro texto neutro sin relacion alguna.':[0.5,0.5]}
+            def embed(self,texts):
+                FakeProvider.calls+=1;return [self.vectors[t] for t in texts]
+        d=document('Procedimiento de rutina para mantenimiento habitual.\n\n'
+                    'Este es un caso urgente que requiere atencion inmediata.\n\nOtro texto neutro sin relacion alguna.')
+        provider=FakeProvider()
+        selected=retrieve(d,'emergencia critica que no puede esperar',60,provider=provider)
+        self.assertEqual(selected[0]['text'],'Este es un caso urgente que requiere atencion inmediata.')
+        self.assertEqual(FakeProvider.calls,1)
+
+    def test_embedding_rerank_is_skipped_without_a_provider(self):
+        d=document('Uno.\n\nDos.\n\nTres.')
+        # No provider passed: behavior must be pure BM25, identical to the default path.
+        self.assertEqual(retrieve(d,'dos',60),retrieve(d,'dos',60,provider=None))
 
     def test_docx_tables_and_body_order(self):
         try:from docx import Document
@@ -125,6 +184,49 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(validate_answer(self.c,self.doc,self.seg,a,'local')['status'],'needs_review')
 
 
+class ConfigTests(unittest.TestCase):
+    def test_reasoning_budget_defaults_and_bounds(self):
+        Config().validate()  # default reasoning_max_output_tokens >= max_output_tokens
+        with self.assertRaises(ValueError):Config(reasoning_max_output_tokens=100).validate()  # below max_output_tokens
+        with self.assertRaises(ValueError):Config(reasoning_max_output_tokens=5000).validate()  # above hard cap
+        Config(max_output_tokens=200,reasoning_max_output_tokens=200).validate()  # equal is allowed
+
+    def test_embedding_model_must_be_short_string(self):
+        Config(embedding_model='').validate()
+        Config(embedding_model='nomic-embed-text').validate()
+        with self.assertRaises(ValueError):Config(embedding_model='x'*161).validate()
+
+
+class DistillTests(unittest.TestCase):
+    segments=[{'id':'s1','text':'Parrafo irrelevante.'},{'id':'s2','text':'El plazo de entrega es de 10 dias.'}]
+
+    def test_no_compression_without_local_engine(self):
+        self.assertIsNone(distill.compress(LocalProvider(Config(local_enabled=False)),Config(local_enabled=False),'x',self.segments))
+
+    def test_no_compression_without_segments(self):
+        self.assertIsNone(distill.compress(LocalProvider(Config(local_enabled=True)),Config(local_enabled=True),'x',[]))
+
+    def test_keeps_only_the_chosen_existing_segments(self):
+        def transport(url,payload,**kw):
+            return {'choices':[{'finish_reason':'stop','message':{'content':json.dumps(
+                {'summary':'Se conoce el plazo.','missing':'Nada mas.','key_segment_ids':['s2','no-existe']})}}]}
+        cfg=Config(local_enabled=True)
+        result=distill.compress(LocalProvider(cfg,transport),cfg,'Cual es el plazo?',self.segments)
+        self.assertEqual([s['id'] for s in result['segments']],['s2'])
+        self.assertEqual(result['summary'],'Se conoce el plazo.')
+
+    def test_falls_back_to_none_on_malformed_output(self):
+        def transport(url,payload,**kw):
+            return {'choices':[{'finish_reason':'stop','message':{'content':json.dumps({'summary':'x'})}}]}
+        cfg=Config(local_enabled=True)
+        self.assertIsNone(distill.compress(LocalProvider(cfg,transport),cfg,'x',self.segments))
+
+    def test_falls_back_to_none_when_local_call_fails(self):
+        cfg=Config(local_enabled=True)
+        def transport(url,payload,**kw):raise UserError('sin conexion')
+        self.assertIsNone(distill.compress(LocalProvider(cfg,transport),cfg,'x',self.segments))
+
+
 class ProviderTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=Store(Path(self.tmp.name)/'state.db')
@@ -145,6 +247,23 @@ class ProviderTests(unittest.TestCase):
         self.assertFalse(calls[0][1]['chat_template_kwargs']['enable_thinking'])
         self.assertEqual(meta['provider'],'local')
 
+    def test_embed_returns_none_without_configured_model(self):
+        self.assertIsNone(LocalProvider(Config(local_enabled=True)).embed('texto'))
+        self.assertIsNone(LocalProvider(Config(local_enabled=False,embedding_model='m')).embed('texto'))
+
+    def test_embed_batches_ollama_requests_into_one_call(self):
+        calls=[]
+        def transport(url,payload,**kw):
+            calls.append((url,payload));return {'embeddings':[[1.0,0.0],[0.0,1.0]]}
+        provider=LocalProvider(Config(local_enabled=True,local_backend='ollama',embedding_model='embed-model'),transport)
+        result=provider.embed(['a','b'])
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0][1]['input'],['a','b'])
+        self.assertEqual(result,[[1.0,0.0],[0.0,1.0]])
+
+    def test_embed_fails_closed_on_malformed_response(self):
+        provider=LocalProvider(Config(local_enabled=True,embedding_model='m'),lambda *a,**k:{'unexpected':True})
+        self.assertIsNone(provider.embed(['a']))
+
     def test_disabled_cloud_never_touches_network(self):
         with self.assertRaises(UserError):GeminiProvider(Config(),self.store,lambda *a: self.fail('network')).evaluate('s','u','j','c')
 
@@ -161,6 +280,26 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(self.store.usage()['accounted_usd'],.0002)
         self.assertEqual(self.store.usage()['unconfirmed_usd'],0)
         self.assertEqual(meta['usage']['promptTokenCount'],100)
+
+    def test_search_disabled_by_default_even_with_cloud_enabled(self):
+        with self.assertRaises(UserError):GeminiProvider(self.cfg,self.store,lambda *a:self.fail('network')).search('q','job','c')
+
+    def test_search_returns_grounded_text_and_sources(self):
+        cfg=replace(self.cfg,web_search_enabled=True)
+        calls=[]
+        def transport(url,payload,*args):
+            calls.append((url,payload))
+            if url.endswith('countTokens'):return {'totalTokens':50}
+            return {'usageMetadata':{'promptTokenCount':50,'candidatesTokenCount':40},
+                'candidates':[{'finishReason':'STOP','content':{'parts':[{'text':'El dolar cotiza a 1000.'}]},
+                    'groundingMetadata':{'groundingChunks':[{'web':{'uri':'https://ejemplo.com/dolar','title':'Cotizacion'}}]}}]}
+        with patch.dict(os.environ,{'GEMINI_API_KEY':'test-only'}):
+            text,sources,meta=GeminiProvider(cfg,self.store,transport).search('cotizacion del dolar','job','conversation-search')
+        self.assertIn('1000',text)
+        self.assertEqual(sources,[{'title':'Cotizacion','uri':'https://ejemplo.com/dolar'}])
+        self.assertEqual(meta['provider'],'gemini-search')
+        self.assertNotIn('responseSchema',calls[1][1])
+        self.assertEqual(calls[1][1]['tools'],[{'google_search':{}}])
 
     def test_no_retry_on_unknown_paid_outcome(self):
         def transport(url,payload,*args):

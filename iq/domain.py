@@ -24,6 +24,57 @@ def text_field(obj,key,limit=1000,optional=False):
     return value.strip()
 
 
+# Heuristic only: a fast, zero-cost signal for when a request likely benefits from
+# extended local reasoning. It is intentionally conservative (few false positives)
+# because turning reasoning on inflates tokens and latency (see docs/ARQUITECTURA.md).
+REASONING_HINTS = (
+    'por que', 'porque', 'analiz', 'compar', 'contradicc', 'diferenci', 'estrateg',
+    'disen', 'planific', 'evalua', 'justific', 'demostr', 'deduc', 'razona',
+    'explica', 'implica', 'consecuenc', 'ventajas y desventajas', 'pros y contras',
+    'en que casos', 'cual es mejor', 'recomendame', 'deberiamos', 'que conviene',
+    'riesgo', 'inconsistenc', 'como resolver', 'paso a paso', 'plan de',
+)
+
+
+def estimate_complexity(text, document_count=0, long_threshold=420):
+    """True when a request likely needs multi-step reasoning rather than direct recall.
+
+    This never calls a model: it only decides whether the local model should be
+    asked to think before answering (see providers.LocalProvider.generate). Keeping
+    it a pure heuristic avoids spending an extra model call just to classify intent.
+    """
+    msg = folded(text)
+    if any(hint in msg for hint in REASONING_HINTS):
+        return True
+    if document_count >= 2:
+        return True
+    if len(msg) > long_threshold:
+        return True
+    if msg.count('?') > 1:
+        return True
+    return False
+
+
+# Heuristic only, same spirit as estimate_complexity: a fast, zero-cost signal for
+# when a request is asking about something outside any local document and outside the
+# model's fixed training data — current events, prices, "right now" — where a web
+# search is the only thing that could actually help, as opposed to a question a local
+# document or a longer local think could answer.
+EXTERNAL_INFO_HINTS = (
+    'actual', 'hoy', 'ahora mismo', 'este mes', 'este año', 'reciente', 'ultima version',
+    'ultimo', 'noticia', 'en internet', 'busca en la web', 'buscá en la web', 'precio de mercado',
+    'cotizacion', 'segun internet', 'que paso con', 'que esta pasando', 'novedades de',
+)
+
+
+def needs_external_info(text):
+    """True when a request likely needs live web information, not just more local
+    reasoning. Never calls a model — see providers.GeminiProvider.search for what this
+    gates, and config.Config.web_search_enabled for why it stays opt-in."""
+    msg = folded(text)
+    return any(hint in msg for hint in EXTERNAL_INFO_HINTS)
+
+
 def validate_rubric(data):
     if not isinstance(data,dict): raise UserError('La rúbrica debe ser un objeto.')
     name=text_field(data,'name',120)

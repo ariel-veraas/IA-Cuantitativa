@@ -1,0 +1,11 @@
+{
+  "imap_host": "imap.tuproveedor.com",
+  "imap_port": 993,
+  "imap_user": "atencion@tuempresa.com",
+  "imap_password": "PONE_UNA_CONTRASEÑA_DE_APLICACION_ACA",
+  "inbox_folder": "INBOX",
+  "drafts_folder": "Drafts",
+  "api_base": "http://127.0.0.1:8765",
+  "api_key": "PONE_LA_CLAVE_DE_CONFIGURACION_INTEGRACIONES_ACA",
+  "wait_seconds": 60
+}

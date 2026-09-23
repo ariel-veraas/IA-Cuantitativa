@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -14,6 +15,7 @@ from .capabilities import Capabilities
 from .conversation import evaluate_conversation, select_skill
 from .engine import Engine
 from .vault import Vault
+from .providers import LocalProvider
 
 
 class Application:
@@ -96,7 +98,8 @@ class Application:
 
     def configure_local(self,data):
         changes={'local_url':data.get('url'),'local_model':data.get('model'),'local_enabled':data.get('enabled'),
-                 'local_backend':data.get('backend',self.config.local_backend)}
+                 'local_backend':data.get('backend',self.config.local_backend),
+                 'embedding_model':data.get('embedding_model',self.config.embedding_model)}
         config=replace(self.config,**changes).validate()
         with self.store.db() as c:c.execute("INSERT OR REPLACE INTO flags VALUES ('local_config',?)",(json.dumps(changes),))
         self.config=config
@@ -122,6 +125,8 @@ class Application:
         if test:
             if skill.get('builtin'):raise UserError('Esta capacidad ya está incluida.')
             message=skill['example']
+        elif skill.get('requires_documents') and not ids:
+            raise UserError('Esta capacidad necesita al menos un documento adjunto.')
         conversation_id=data.get('conversation_id')
         if conversation_id:
             if not isinstance(conversation_id,str):raise UserError('Conversación inválida.')
@@ -138,7 +143,7 @@ class Application:
         self.wake.set();return job
 
     def configure_cloud(self,data):
-        allowed=('cloud_enabled','gemini_model','input_usd_per_million','output_usd_per_million',
+        allowed=('cloud_enabled','web_search_enabled','gemini_model','input_usd_per_million','output_usd_per_million',
                  'monthly_budget_usd','per_job_budget_usd','pricing_confirmed')
         changes={k:data.get(k,getattr(self.config,k)) for k in allowed}
         config=replace(self.config,**changes).validate()
@@ -151,6 +156,35 @@ class Application:
         if config.cloud_enabled and not os.environ.get('GEMINI_API_KEY'):raise UserError('Ingresá una clave para habilitar Gemini.')
         with self.store.db() as c:c.execute("INSERT OR REPLACE INTO flags VALUES ('cloud_config',?)",(json.dumps(changes),))
         self.config=config;return config.public()
+
+    def integration_key(self):
+        with self.store.db() as c:
+            row=c.execute("SELECT value FROM flags WHERE key='integration_key'").fetchone()
+        return {'key':json.loads(row[0])['key'] if row else None}
+
+    def rotate_integration_key(self):
+        key='iqk_'+secrets.token_urlsafe(32)
+        with self.store.db() as c:c.execute("INSERT OR REPLACE INTO flags VALUES ('integration_key',?)",(json.dumps({'key':key}),))
+        return {'key':key}
+
+    def revoke_integration_key(self):
+        with self.store.db() as c:c.execute("DELETE FROM flags WHERE key='integration_key'")
+        return {'revoked':True}
+
+    def integration_key_matches(self,candidate):
+        with self.store.db() as c:
+            row=c.execute("SELECT value FROM flags WHERE key='integration_key'").fetchone()
+        return bool(row) and secrets.compare_digest(candidate or '',json.loads(row[0])['key'])
+
+    def add_capability_example(self,data):
+        capability_id=data.get('capability_id')
+        return self.capabilities.add_example(capability_id,data.get('request',''),data.get('answer',''),
+            data.get('rating',''),data.get('correction',''))
+
+    def improve_capability(self,data):
+        capability_id=data.get('capability_id')
+        if not isinstance(capability_id,str):raise UserError('Capacidad inválida.')
+        return self.capabilities.propose_improvement(capability_id,LocalProvider(self.config),self.config)
 
     def delete_document(self,id):
         self.store.document(id)

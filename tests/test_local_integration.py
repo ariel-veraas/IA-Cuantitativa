@@ -59,6 +59,55 @@ class LocalIntegrationTests(unittest.TestCase):
                 self.assertEqual(job['result']['summary']['decision'],'does_not_meet')
             finally:app.close()
 
+    def test_complex_conversation_request_enables_reasoning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app=Application(tmp,Config(local_enabled=True,local_url=self.url))
+            try:
+                doc=app.add_document({'text':'El plazo de entrega es de 10 dias. La garantia es de 12 meses.'})
+                j=app.chat({'message':'Compara estos dos plazos y explica si hay alguna contradiccion entre ellos','document_ids':[doc['id']]})
+                for _ in range(100):
+                    j=app.store.job(j['id'])
+                    if j['status'] in ('completed','failed'):break
+                    time.sleep(.02)
+                self.assertEqual(j['status'],'completed',j.get('error'))
+                self.assertTrue(j['result']['reasoning'])
+                self.assertTrue(self.server.payload['chat_template_kwargs']['enable_thinking'])
+                self.assertEqual(self.server.payload['max_tokens'],Config().reasoning_max_output_tokens)
+            finally:app.close()
+
+    def test_capability_test_always_reasons_even_for_a_short_simple_example(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app=Application(tmp,Config(local_enabled=True,local_url=self.url))
+            try:
+                doc=app.add_document({'text':'Contenido de referencia disponible para la prueba.'})
+                data={'name':'Firma','description':'x','instructions':'x','example':'pedido corto','expected':'x'}
+                cap=app.capabilities.save(data)
+                j=app.chat({'message':'x','skill_id':cap['id'],'skill_version':1,'skill_test':True,'document_ids':[doc['id']]})
+                for _ in range(100):
+                    j=app.store.job(j['id'])
+                    if j['status'] in ('completed','failed'):break
+                    time.sleep(.02)
+                self.assertEqual(j['status'],'completed',j.get('error'))
+                self.assertTrue(j['result']['reasoning'])
+                self.assertTrue(self.server.payload['chat_template_kwargs']['enable_thinking'])
+            finally:app.close()
+
+    def test_simple_conversation_request_keeps_reasoning_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app=Application(tmp,Config(local_enabled=True,local_url=self.url))
+            try:
+                doc=app.add_document({'text':'El plazo de entrega es de 10 dias.'})
+                j=app.chat({'message':'¿Cual es el plazo de entrega?','document_ids':[doc['id']]})
+                for _ in range(100):
+                    j=app.store.job(j['id'])
+                    if j['status'] in ('completed','failed'):break
+                    time.sleep(.02)
+                self.assertEqual(j['status'],'completed',j.get('error'))
+                self.assertFalse(j['result']['reasoning'])
+                self.assertFalse(self.server.payload['chat_template_kwargs']['enable_thinking'])
+                self.assertEqual(self.server.payload['max_tokens'],Config().max_output_tokens)
+            finally:app.close()
+
     def test_redirects_are_not_followed(self):
         with self.assertRaises(UserError):post_json(self.url+'/redirect',{})
         self.assertEqual(self.server.paths,[])

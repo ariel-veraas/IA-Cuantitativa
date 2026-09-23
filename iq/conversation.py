@@ -6,9 +6,10 @@ import re
 import time
 from decimal import Decimal
 from .config import Config
-from .domain import UserError, clean, folded
+from .domain import UserError, clean, folded, estimate_complexity, needs_external_info
 from .documents import retrieve
 from .providers import LocalProvider, GeminiProvider
+from . import distill
 
 ANSWER_SCHEMA={'type':'object','properties':{
     'answer':{'type':'string'},'needs_help':{'type':'boolean'},
@@ -35,12 +36,23 @@ def calculate(text):
     return f'{candidate} = {format(value.normalize(),"f")}'
 
 
+# A fast, zero-cost keyword router — not natural-language understanding. It exists so
+# the common, unambiguous cases (explicit "resumí", "redactá", ...) never spend a model
+# call just to pick which capability applies. When phrasing is not covered here, it
+# falls back to "consultar-documentos" (with docs) or "asistente" (without), which is
+# itself a reasonable default rather than a wrong guess. See docs/ARQUITECTURA.md for
+# why this stays heuristic instead of adding a classification call.
+SUMMARY_HINTS = ('resum', 'sintetiz', 'sintesis', 'puntos clave', 'puntos principales', 'en pocas palabras', 'idea principal')
+CLASSIFY_HINTS = ('clasific', 'que tipo de documento', 'a que categoria', 'identifica el tipo', 'de que trata')
+DRAFT_HINTS = ('redact', 'escribi un', 'escribime un', 'borrador', 'preparame un correo', 'preparame una propuesta', 'armame un')
+
+
 def select_skill(message,document_ids,requested='auto'):
     if requested!='auto':return requested
     msg=folded(message)
-    if document_ids and 'resum' in msg:return 'resumir-documentos'
-    if document_ids and ('clasific' in msg or 'que tipo de documento' in msg):return 'clasificar-documentos'
-    if any(t in msg for t in ('redact','escribi un','borrador')):return 'redactar'
+    if document_ids and any(t in msg for t in SUMMARY_HINTS):return 'resumir-documentos'
+    if document_ids and any(t in msg for t in CLASSIFY_HINTS):return 'clasificar-documentos'
+    if any(t in msg for t in DRAFT_HINTS):return 'redactar'
     return 'consultar-documentos' if document_ids else 'asistente'
 
 
@@ -82,10 +94,22 @@ def evaluate_conversation(store,job,capabilities):
     if response is not None:r['answer']=response
     else:
         r['provider']='pending'
+        # Testing a custom capability is deliberate and infrequent, not a fast chat
+        # reply under latency pressure, and precisely following a short hand-written
+        # instruction is exactly the kind of thing smaller local models (the 1.7B
+        # profile recommended for machines without a GPU) get wrong without thinking
+        # first — measured directly: qwen3:1.7b ignored "Terminá el mensaje con
+        # Gracias." and wrote a generic paragraph instead when reasoning was off.
+        # So a capability test always gets its best shot, regardless of how short or
+        # simple the example text looks to the heuristic.
+        reasoning=estimate_complexity(text,len(docs)) or bool(p.get('skill_test'))
+        r['reasoning']=reasoning
+        local_provider=LocalProvider(cfg)
+        embed_provider=local_provider if cfg.local_enabled and cfg.embedding_model else None
         selected=[]
         per_document=max(1500,cfg.max_context_chars//max(1,len(docs)))
         for d in docs:
-            for s in retrieve(d,text,per_document):
+            for s in retrieve(d,text,per_document,provider=embed_provider):
                 selected.append({**s,'id':d['id'][:8]+':'+s['id'],'document_id':d['id'],'document_name':d['name']})
         history=[];used=0
         for m in reversed(p.get('history',[])):
@@ -95,8 +119,11 @@ def evaluate_conversation(store,job,capabilities):
             'No ejecutás código ni enviás mensajes. No tenés búsqueda web en este procedimiento. '
             'Devolvé JSON según el esquema: answer, needs_help y evidence con segment_id. '
             'Elegí identificadores de los fragmentos que fundamentan la respuesta. La aplicación adjunta el texto original; no reescribas citas. '
-            'Marcá needs_help si falta evidencia o no podés resolver. No inventes citas. '
-            'Si no hay document_fragments, evidence debe ser una lista vacía; redactar no necesita citas. '
+            'Marcá needs_help en true solo si de verdad no podés cumplir el pedido; si ya dejaste una respuesta completa '
+            'que sigue las instrucciones, marcá needs_help en false. No inventes citas. '
+            'Si no hay document_fragments, evidence debe ser una lista vacía; eso no significa que falte información: '
+            'muchas capacidades (redactar, calcular, responder algo general) no necesitan documentos, seguí sus '
+            'instrucciones igual. '
             'No muestres razonamiento interno.\n'+skill['instructions'])
         user=json.dumps({'request':text,'recent_conversation':history,'document_fragments':selected,
             'coverage':{'selected_characters':sum(len(s['text']) for s in selected),'document_characters':sum(d['characters'] for d in docs),
@@ -111,18 +138,95 @@ def evaluate_conversation(store,job,capabilities):
         if cfg.local_enabled:
             try:
                 r['provider']='local'
-                answer,meta=LocalProvider(cfg).generate(system,user,schema)
+                answer,meta=local_provider.generate(system,user,schema,reasoning=reasoning)
                 r['model']=meta;valid=validate_response(answer,selected,must_cite)
             except UserError as e:error=str(e)
-        if (valid is None or valid['needs_help']) and p['allow_cloud'] and store.job(job['id'])['status']!='cancelled':
-            if store.has_cloud_attempt(job['id'],'conversation'):
-                error='Hay un intento externo previo; no se repite para evitar un cobro duplicado.'
-            else:
+        reconsidered=False
+        if (valid is None or valid['needs_help']) and cfg.local_enabled and store.job(job['id'])['status']!='cancelled':
+            # One bounded, free second local look with a wider slice of the same
+            # documents — "reconsider before giving up" rather than a fixed answer
+            # accepted on the first try. Only fires when there is actually more to
+            # offer than the first pass already had; otherwise a second identical
+            # call would just spend time for the same result.
+            wider_budget=min(cfg.max_context_chars*2,20000)
+            wider_selected=[]
+            for d in docs:
+                for s in retrieve(d,text,max(1500,wider_budget//max(1,len(docs))),provider=embed_provider):
+                    wider_selected.append({**s,'id':d['id'][:8]+':'+s['id'],'document_id':d['id'],'document_name':d['name']})
+            if len(wider_selected)>len(selected):
+                reconsidered=True;selected=wider_selected
+                user=json.dumps({'request':text,'recent_conversation':history,'document_fragments':selected,
+                    'coverage':{'selected_characters':sum(len(s['text']) for s in selected),'document_characters':sum(d['characters'] for d in docs),
+                                'note':'Segundo intento con más contexto local antes de considerar ayuda externa.'}},ensure_ascii=False)
+                schema=json.loads(json.dumps(ANSWER_SCHEMA))
+                if not selected:schema['properties']['evidence']['maxItems']=0
+                else:schema['properties']['evidence']['items']['properties']['segment_id']['enum']=[s['id'] for s in selected]
                 try:
-                    r['provider']='gemini'
-                    answer,meta=GeminiProvider(cfg,store).generate(system,user,job['id'],'conversation',schema)
+                    r['provider']='local'
+                    answer,meta=local_provider.generate(system,user,schema,reasoning=True)
                     r['model']=meta;valid=validate_response(answer,selected,must_cite)
+                except UserError as e:error=str(e)
+        r['reconsidered']=reconsidered
+        if (valid is None or valid['needs_help']) and p['allow_cloud'] and store.job(job['id'])['status']!='cancelled':
+            # Only when the request itself reads as needing live/external information
+            # (domain.needs_external_info) and the user opted into it (web_search_enabled,
+            # off by default): search the web via Gemini's grounding tool, then hand the
+            # result to one more free local call to produce a cited, validated answer —
+            # the search call itself never answers unchecked. Bounded to one search
+            # attempt per job either way, tracked under its own ledger criterion so it
+            # never doubles as the plain-escalation attempt below.
+            if (cfg.web_search_enabled and needs_external_info(text)
+                    and not store.has_cloud_attempt(job['id'],'conversation-search')):
+                try:
+                    r['provider']='gemini-search'
+                    search_text,sources,search_meta=GeminiProvider(cfg,store).search(text,job['id'],'conversation-search')
+                    r['search_sources']=sources
+                    if cfg.local_enabled:
+                        search_system=system.replace('No tenés búsqueda web en este procedimiento. ',
+                            'Se hizo una búsqueda web real para este pedido; su resultado está en web_search_result. '
+                            'Usalo como fuente citando que proviene de una búsqueda web, no inventes más allá de lo que dice. ')
+                        search_user=json.dumps({'request':text,'recent_conversation':history,'document_fragments':selected,
+                            'web_search_result':search_text,'web_search_sources':[s['uri'] for s in sources],
+                            'coverage':{'selected_characters':sum(len(s['text']) for s in selected),'document_characters':sum(d['characters'] for d in docs),
+                                        'note':'Se agregó un resultado de búsqueda web real a este pedido.'}},ensure_ascii=False)
+                        search_schema=json.loads(json.dumps(ANSWER_SCHEMA))
+                        if not selected:search_schema['properties']['evidence']['maxItems']=0
+                        else:search_schema['properties']['evidence']['items']['properties']['segment_id']['enum']=[s['id'] for s in selected]
+                        try:
+                            r['provider']='local'
+                            answer,meta=local_provider.generate(search_system,search_user,search_schema,reasoning=True)
+                            r['model']=meta;valid=validate_response(answer,selected,must_cite)
+                            if valid:r['web_search_used']=True
+                        except UserError as e:error=str(e)
                 except UserError as e:error=str(e);r['warnings'].append(error)
+            if (valid is None or valid['needs_help']) and store.job(job['id'])['status']!='cancelled':
+                if store.has_cloud_attempt(job['id'],'conversation'):
+                    error='Hay un intento externo previo; no se repite para evitar un cobro duplicado.'
+                else:
+                    try:
+                        r['provider']='gemini'
+                        # Hand off a minimal context instead of resending everything the local
+                        # model already had: one bounded, free local call picks only the
+                        # fragments the paid call actually needs. Falls back to the full
+                        # selection when compression is unavailable, empty while citations
+                        # are required, or its own output doesn't check out.
+                        brief=distill.compress(local_provider,cfg,text,selected)
+                        cloud_selected=selected
+                        if brief and (brief['segments'] or not must_cite):
+                            cloud_selected=brief['segments']
+                        cloud_user_obj={'request':text,'recent_conversation':history,'document_fragments':cloud_selected,
+                            'coverage':{'selected_characters':sum(len(s['text']) for s in cloud_selected),
+                                        'document_characters':sum(d['characters'] for d in docs),
+                                        'note':'La selección puede ser parcial; no demuestra ausencia en todo el documento.'}}
+                        if brief:cloud_user_obj['local_context_brief']={'summary':brief['summary'],'missing':brief['missing']}
+                        cloud_user=json.dumps(cloud_user_obj,ensure_ascii=False)
+                        cloud_schema=json.loads(json.dumps(ANSWER_SCHEMA))
+                        if not cloud_selected:cloud_schema['properties']['evidence']['maxItems']=0
+                        else:cloud_schema['properties']['evidence']['items']['properties']['segment_id']['enum']=[s['id'] for s in cloud_selected]
+                        r['context']['cloud_characters']=len(system)+len(cloud_user)
+                        answer,meta=GeminiProvider(cfg,store).generate(system,cloud_user,job['id'],'conversation',cloud_schema)
+                        r['model']=meta;valid=validate_response(answer,cloud_selected,must_cite)
+                    except UserError as e:error=str(e);r['warnings'].append(error)
         if valid:r.update(valid)
         else:r.update(answer=error,needs_help=True)
         r['review_required']=bool(docs and valid)

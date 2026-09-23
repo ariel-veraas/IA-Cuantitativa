@@ -64,5 +64,48 @@ class HttpTests(unittest.TestCase):
         code,_=self.request('/api/settings/local',{'url':'https://external.example','model':'test','enabled':True})
         self.assertEqual(code,400)
 
+    def test_integration_key_lifecycle(self):
+        self.assertIsNone(self.request('/api/integration/key')[1]['key'])
+        code,rotated=self.request('/api/integration/key/rotate',{})
+        self.assertEqual(code,200);self.assertTrue(rotated['key'])
+        self.assertEqual(self.request('/api/integration/key')[1]['key'],rotated['key'])
+        code,revoked=self.request('/api/integration/key/revoke',{})
+        self.assertEqual(code,200);self.assertTrue(revoked['revoked'])
+        self.assertIsNone(self.request('/api/integration/key')[1]['key'])
+
+    def test_integration_ask_needs_no_session_token_only_the_api_key(self):
+        key=self.request('/api/integration/key/rotate',{})[1]['key']
+        code,answer=self.request('/api/integration/ask',{'message':'Redactame un correo de seguimiento para un cliente.'},headers={'X-IQ-Api-Key':key},auth=False)
+        self.assertEqual(code,200)
+        self.assertEqual(answer['status'],'completed')
+        self.assertTrue(answer['needs_help'])
+        self.assertFalse(answer['escalated'])
+        self.assertIn('Motor local',answer['answer'])
+        self.assertTrue(answer['job_id']);self.assertTrue(answer['conversation_id'])
+
+    def test_integration_ask_rejects_missing_or_wrong_key(self):
+        self.assertEqual(self.request('/api/integration/ask',{'message':'Hola'},auth=False)[0],403)
+        self.request('/api/integration/key/rotate',{})
+        code,_=self.request('/api/integration/ask',{'message':'Hola'},headers={'X-IQ-Api-Key':'clave-inventada'},auth=False)
+        self.assertEqual(code,403)
+
+    def test_integration_ask_validates_wait_seconds(self):
+        key=self.request('/api/integration/key/rotate',{})[1]['key']
+        code,_=self.request('/api/integration/ask',{'message':'Hola','wait_seconds':1000},headers={'X-IQ-Api-Key':key},auth=False)
+        self.assertEqual(code,400)
+
+    def test_integration_status_matches_ask_result(self):
+        key=self.request('/api/integration/key/rotate',{})[1]['key']
+        _,answer=self.request('/api/integration/ask',{'message':'Redactame un correo de seguimiento para un cliente.'},headers={'X-IQ-Api-Key':key},auth=False)
+        code,status=self.request('/api/integration/status/'+answer['job_id'],headers={'X-IQ-Api-Key':key},auth=False)
+        self.assertEqual(code,200)
+        self.assertEqual(status['answer'],answer['answer'])
+        self.assertEqual(status['status'],'completed')
+
+    def test_integration_ask_still_requires_loopback_host(self):
+        key=self.request('/api/integration/key/rotate',{})[1]['key']
+        code,_=self.request('/api/integration/ask',{'message':'Hola'},headers={'X-IQ-Api-Key':key,'Host':'evil.example'},auth=False)
+        self.assertEqual(code,403)
+
 
 if __name__=='__main__':unittest.main()

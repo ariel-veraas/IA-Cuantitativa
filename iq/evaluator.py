@@ -2,10 +2,11 @@ import json
 import re
 import time
 from decimal import Decimal
-from .domain import clean, folded, aggregate, UserError
+from .domain import clean, folded, aggregate, estimate_complexity, UserError
 from .documents import retrieve
 from .providers import LocalProvider, GeminiProvider, messages
 from .config import Config
+from . import distill
 
 
 def pending(c,reason):
@@ -78,20 +79,27 @@ def evaluate_job(store,job,registry):
     result['previous_elapsed_seconds']=result.get('elapsed_seconds',0)
     result.update(skill={'id':skill['id'],'version':skill['version'],'sha256':skill['sha256']},
                   document={'id':doc['id'],'name':doc['name'],'sha256':doc['sha256']},warnings=doc['warnings'])
+    local_provider=LocalProvider(cfg)
+    embed_provider=local_provider if cfg.local_enabled and cfg.embedding_model else None
     for c in criteria:
         if store.job(job['id'])['status']=='cancelled':return
         if c['id'] in done:continue
         t=time.monotonic();row=check_rule(c,doc)
         if row is None:
             row=pending(c,'Este criterio necesita interpretación. Conectá un modelo local o habilitá asistencia externa.')
-            selected=retrieve(doc,c['label'],cfg.max_context_chars)
+            selected=retrieve(doc,c['label'],cfg.max_context_chars,provider=embed_provider)
             system,user=messages(skill,c,selected)
+            # Same heuristic used for chat (domain.estimate_complexity), applied to the
+            # criterion's own wording: short literal-sounding labels stay fast, while
+            # labels that read as comparative/interpretive judgments get reasoning on.
+            reasoning=estimate_complexity(c['label'])
             context_info={'selected_characters':sum(len(s['text']) for s in selected),
                           'document_characters':doc['characters'],'prompt_characters':len(system)+len(user),
-                          'selection':'lexical','segments':len(selected)}
+                          'selection':'lexical' if embed_provider is None else 'lexical+embeddings','segments':len(selected),
+                          'reasoning':reasoning}
             if payload['mode']=='local':
                 try:
-                    answer,meta=LocalProvider(cfg).evaluate(system,user)
+                    answer,meta=local_provider.evaluate(system,user,reasoning=reasoning)
                     row=validate_answer(c,doc,selected,answer,'local');row['model']=meta
                 except UserError as exc:row=pending(c,str(exc))
             if row['status']=='needs_review' and payload['allow_cloud']:
@@ -100,8 +108,17 @@ def evaluate_job(store,job,registry):
                     row=pending(c,'Existe un intento externo previo. Revisá el consumo y la evidencia antes de crear otra evaluación.')
                 else:
                     try:
-                        answer,meta=GeminiProvider(cfg,store).evaluate(system,user,job['id'],c['id'])
-                        row=validate_answer(c,doc,selected,answer,'gemini');row['model']=meta
+                        # Same free local distillation used for chat escalation (see
+                        # iq/distill.py): only pay to send the fragments the paid call
+                        # actually needs, falling back to the full selection otherwise.
+                        brief=distill.compress(local_provider,cfg,c['label'],selected)
+                        cloud_selected=brief['segments'] if brief and brief['segments'] else selected
+                        cloud_context={'criterion':{'id':c['id'],'instruction':c['label']},'document_fragments':cloud_selected,
+                            'note':'Los fragmentos pueden ser una selección parcial. No prueban ausencia global.'}
+                        if brief:cloud_context['local_context_brief']={'summary':brief['summary'],'missing':brief['missing']}
+                        cloud_user=json.dumps(cloud_context,ensure_ascii=False)
+                        answer,meta=GeminiProvider(cfg,store).evaluate(system,cloud_user,job['id'],c['id'])
+                        row=validate_answer(c,doc,cloud_selected,answer,'gemini');row['model']=meta
                     except UserError as exc:row=pending(c,str(exc))
             row['context']=context_info
         row['elapsed_seconds']=round(time.monotonic()-t,3)

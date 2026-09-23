@@ -3,6 +3,7 @@ import argparse
 import json
 import secrets
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
@@ -13,6 +14,17 @@ from .evaluator import markdown_report
 from .conversation import conversation_report
 
 MAX_BODY=12*1024*1024
+
+
+def integration_view(job):
+    res=job['result'] if isinstance(job.get('result'),dict) else {}
+    return {'status':job['status'],'job_id':job['id'],
+            'conversation_id':job.get('payload',{}).get('conversation_id'),
+            'answer':res.get('answer',''),'needs_help':res.get('needs_help'),
+            'provider':res.get('provider'),'escalated':res.get('provider') in ('gemini','gemini-search'),
+            'reasoning':res.get('reasoning',False),'web_search_used':res.get('web_search_used',False),
+            'evidence':res.get('evidence',[]),'warnings':res.get('warnings',[]),
+            'error':job.get('error','')}
 
 
 class Server(ThreadingHTTPServer):
@@ -58,6 +70,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send(403,{'error':'La sesión venció. Recargá la página.'});return False
         return True
 
+    def integration_authorized(self):
+        if not self.server.app.integration_key_matches(self.headers.get('X-IQ-Api-Key','')):
+            self.send(403,{'error':'Clave de integración inválida o no generada. Generala desde Configuración → Integraciones.'});return False
+        return True
+
     def do_GET(self):
         if not self.permitted():return
         url=urlsplit(self.path);path=url.path;app=self.server.app
@@ -67,9 +84,14 @@ class Handler(BaseHTTPRequestHandler):
             file,mime=assets[path];return self.send(200,(ROOT/'iq'/'static'/file).read_bytes(),mime)
         if path=='/api/session':return self.send(200,{'token':self.server.session})
         if path=='/api/health':return self.send(200,{'application':'ia-cuantitativa','version':'1.0.0'})
+        if path.startswith('/api/integration/status/'):
+            if not self.integration_authorized():return
+            try:return self.send(200,integration_view(app.store.job(path.split('/')[-1])))
+            except UserError as exc:return self.send(404,{'error':str(exc)})
         if not self.authorized():return
         try:
             if path=='/api/state':return self.send(200,app.state())
+            if path=='/api/integration/key':return self.send(200,app.integration_key())
             if path=='/api/hardware':
                 from .diagnostics import hardware
                 return self.send(200,hardware())
@@ -86,6 +108,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200,content.getvalue(),'application/zip',attachment='ia-cuantitativa-respaldo.zip')
             if path.startswith('/api/conversations/'):
                 return self.send(200,app.capabilities.conversation(path.split('/')[-1]))
+            if path.startswith('/api/capabilities/') and path.endswith('/examples'):
+                return self.send(200,app.capabilities.examples(path.split('/')[-2]))
             if path.startswith('/api/jobs/') and not path.endswith('/export'):
                 return self.send(200,app.store.job(path.split('/')[-1]))
             if path.startswith('/api/documents/'):
@@ -98,17 +122,40 @@ class Handler(BaseHTTPRequestHandler):
             self.send(404,{'error':'Ruta no encontrada.'})
         except UserError as exc:self.send(404,{'error':str(exc)})
 
-    def do_POST(self):
-        if not self.permitted() or not self.authorized():return
+    def read_json_body(self):
+        if self.headers.get('Transfer-Encoding'):raise UserError('Transferencia no admitida.')
+        length=int(self.headers.get('Content-Length','0'))
+        if length<=0 or length>MAX_BODY:raise UserError('Solicitud vacía o demasiado grande.')
+        if self.headers.get('Content-Type','').split(';')[0]!='application/json':raise UserError('Usá JSON.')
+        raw=self.rfile.read(length)
+        if len(raw)!=length:raise UserError('Solicitud incompleta.')
+        data=json.loads(raw,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if not isinstance(data,dict):raise UserError('Solicitud inválida.')
+        return data
+
+    def handle_integration_ask(self):
+        if not self.integration_authorized():return
         try:
-            if self.headers.get('Transfer-Encoding'):raise UserError('Transferencia no admitida.')
-            length=int(self.headers.get('Content-Length','0'))
-            if length<=0 or length>MAX_BODY:return self.send(413,{'error':'Solicitud vacía o demasiado grande.'})
-            if self.headers.get('Content-Type','').split(';')[0]!='application/json':raise UserError('Usá JSON.')
-            raw=self.rfile.read(length)
-            if len(raw)!=length:raise UserError('Solicitud incompleta.')
-            data=json.loads(raw,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-            if not isinstance(data,dict):raise UserError('Solicitud inválida.')
+            data=self.read_json_body()
+            app=self.server.app
+            wait_seconds=data.pop('wait_seconds',60)
+            if type(wait_seconds) is not int or not 5<=wait_seconds<=120:raise UserError('wait_seconds debe ser un entero entre 5 y 120.')
+            data.setdefault('allow_cloud',app.config.cloud_enabled)
+            job=app.chat(data)
+            deadline=time.monotonic()+wait_seconds
+            current=job
+            while time.monotonic()<deadline and current['status'] in ('queued','running'):
+                time.sleep(0.3);current=app.store.job(job['id'])
+            self.send(200,integration_view(current))
+        except (UserError,ValueError,TypeError,UnicodeDecodeError) as exc:self.send(400,{'error':str(exc) if isinstance(exc,UserError) else 'Revisá los datos enviados.'})
+        except Exception:self.send(500,{'error':'No se pudo completar la operación. Los trabajos guardados se conservan.'})
+
+    def do_POST(self):
+        if not self.permitted():return
+        if urlsplit(self.path).path=='/api/integration/ask':return self.handle_integration_ask()
+        if not self.authorized():return
+        try:
+            data=self.read_json_body()
             app=self.server.app;path=urlsplit(self.path).path
             if path=='/api/documents':return self.send(201,app.add_document(data))
             if path=='/api/demo':return self.send(201,app.demo())
@@ -120,6 +167,10 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/engine/pause':return self.send(200,app.engine.pause())
             if path=='/api/capabilities':return self.send(201,app.capabilities.save(data))
             if path=='/api/capabilities/activate':return self.send(200,app.capabilities.activate(data.get('id'),data.get('version')))
+            if path=='/api/capabilities/examples':return self.send(201,app.add_capability_example(data))
+            if path=='/api/capabilities/improve':return self.send(201,app.improve_capability(data))
+            if path=='/api/integration/key/rotate':return self.send(200,app.rotate_integration_key())
+            if path=='/api/integration/key/revoke':return self.send(200,app.revoke_integration_key())
             if path=='/api/documents/delete':return self.send(200,app.delete_document(data.get('id')))
             if path=='/api/conversations/delete':return self.send(200,app.delete_conversation(data.get('id')))
             if path=='/api/shutdown':

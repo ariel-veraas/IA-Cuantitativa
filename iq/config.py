@@ -33,7 +33,10 @@ class Config:
     timeout_seconds: int = 90
     max_context_chars: int = 10000
     max_output_tokens: int = 900
+    reasoning_max_output_tokens: int = 1600
+    embedding_model: str = ''
     cloud_enabled: bool = False
+    web_search_enabled: bool = False
     gemini_model: str = ''
     input_usd_per_million: float = 0.0
     output_usd_per_million: float = 0.0
@@ -47,19 +50,26 @@ class Config:
             raise ValueError('Motor local desconocido.')
         if type(self.context_tokens) is not int or not 2048<=self.context_tokens<=8192:
             raise ValueError('El contexto local debe estar entre 2048 y 8192 tokens.')
-        for name in ('local_enabled', 'cloud_enabled', 'pricing_confirmed'):
+        for name in ('local_enabled', 'cloud_enabled', 'web_search_enabled', 'pricing_confirmed'):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f'{name} debe ser verdadero o falso.')
-        for name, lo, hi in [('timeout_seconds',5,300),('max_context_chars',1000,24000),('max_output_tokens',128,2000)]:
+        for name, lo, hi in [('timeout_seconds',5,300),('max_context_chars',1000,24000),
+                             ('max_output_tokens',128,2000),('reasoning_max_output_tokens',128,4000)]:
             v = getattr(self, name)
             if type(v) is not int or not lo <= v <= hi:
                 raise ValueError(f'{name} fuera del rango {lo}–{hi}.')
+        # Reasoning traces add tokens on top of the answer; bound them but never
+        # below the plain-answer budget, or turning reasoning on would truncate replies.
+        if self.reasoning_max_output_tokens < self.max_output_tokens:
+            raise ValueError('reasoning_max_output_tokens debe ser mayor o igual a max_output_tokens.')
         for name in ('input_usd_per_million','output_usd_per_million','monthly_budget_usd','per_job_budget_usd'):
             v = getattr(self, name)
             if type(v) not in (int,float) or not math.isfinite(v) or v < 0:
                 raise ValueError(f'{name} debe ser un número finito no negativo.')
         if not isinstance(self.local_model,str) or not 1 <= len(self.local_model) <= 160:
             raise ValueError('Nombre de modelo local inválido.')
+        if not isinstance(self.embedding_model,str) or len(self.embedding_model) > 160:
+            raise ValueError('Nombre de modelo de embeddings inválido.')
         if self.cloud_enabled:
             # These documented models support thinkingBudget=0. Fail closed for others.
             if self.gemini_model not in ('gemini-2.5-flash','gemini-2.5-flash-lite'):
@@ -67,6 +77,8 @@ class Config:
             if not self.pricing_confirmed or any(getattr(self,k)<=0 for k in (
                 'input_usd_per_million','output_usd_per_million','monthly_budget_usd','per_job_budget_usd')):
                 raise ValueError('Gemini necesita tarifas verificadas y presupuestos positivos.')
+        elif self.web_search_enabled:
+            raise ValueError('La búsqueda web necesita Gemini habilitado.')
         return self
 
     def public(self):

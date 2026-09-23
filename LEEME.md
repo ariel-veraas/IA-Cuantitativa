@@ -11,7 +11,7 @@ Asistente local para trabajar con documentos, redactar, calcular y aplicar proce
 
 El paquete está dirigido a Windows 10 22H2 o posterior, de 64 bits, arquitectura Intel/AMD. Reservá al menos 12 GB de disco libre; el perfil equilibrado requiere aproximadamente 4,1 GB de descargas iniciales entre motor y modelo. Necesitás Internet para esa preparación. Después, las funciones locales pueden trabajar sin conexión. Si usás una GPU NVIDIA, mantené actualizado su controlador; Ollama exige 551.61 o posterior. [Requisitos oficiales](https://docs.ollama.com/windows).
 
-El perfil equilibrado utiliza Qwen3 4B; el liviano, Qwen3 1.7B. El motor conserva un modelo cargado y procesa un pedido por vez. El tamaño del modelo no garantiza la calidad de sus respuestas. Los saludos y los cálculos compatibles se resuelven directamente con código.
+El perfil equilibrado utiliza Qwen3 4B; el liviano, Qwen3 1.7B. La app detecta si tu equipo tiene una placa de video y te recomienda el perfil liviano si no la tiene: medido en hardware real, el perfil liviano responde en unos 3 segundos con placa de video o sin ella, mientras que el equilibrado pasa de ser casi instantáneo (con placa de video) a unos 8 segundos (sin ella) — y bastante más en pedidos que requieren razonar. El motor conserva un modelo cargado y procesa un pedido por vez. El tamaño del modelo no garantiza la calidad de sus respuestas. Los saludos y los cálculos compatibles se resuelven directamente con código.
 
 Para cerrar el proceso y liberar el motor administrado, usá **Salir de la aplicación**. Cerrar solamente la pestaña no cierra el asistente. Volver a abrir el ejecutable recupera la instancia en ejecución.
 
@@ -23,13 +23,25 @@ Para cerrar el proceso y liberar el motor administrado, usá **Salir de la aplic
 - **Evaluar criterios:** rúbricas con reglas literales y numéricas, interpretación local y asistencia externa opcional; resultados y fuentes exportables.
 - **Actividad:** revisar trabajos, duración, uso comunicado por el motor y registro del costo externo. Podés descargar informes desde la conversación.
 
-La recuperación selecciona fragmentos por palabras y limita su tamaño. No garantiza encontrar toda la evidencia de un documento largo. Una cita existente no demuestra que la interpretación sea correcta.
+La recuperación selecciona fragmentos por relevancia (BM25, por palabra completa) y limita su tamaño. Si instalás además un modelo de embeddings en tu motor local (campo opcional en Configuración → Motor externo), la búsqueda también puede encontrar fragmentos relacionados por significado aunque no compartan las mismas palabras, con una sola llamada adicional por pedido. No garantiza encontrar toda la evidencia de un documento largo. Una cita existente no demuestra que la interpretación sea correcta.
+
+Para pedidos que parecen necesitar comparar, justificar o encontrar contradicciones, el asistente activa razonamiento extendido en el modelo local antes de responder; para pedidos simples, sigue respondiendo directo. La respuesta indica cuándo se usó ("con razonamiento extendido"). Si el primer intento local no alcanza y hay más del documento sin usar, reconsidera una vez más con más contexto ("reconsiderado con más contexto") antes de pensar en ayuda externa. Las capacidades propias pueden marcarse como "solo tiene sentido con un documento adjunto": usarlas sin archivo se rechaza antes de llamar al modelo.
+
+Cada respuesta de una capacidad propia puede marcarse como "👍 Buena" o "✎ Corregir" (indicando cuál debería haber sido la respuesta). Desde Capacidades, "Mejorar con ejemplos" junta esas correcciones reales y le pide al modelo local que proponga una versión mejorada de las instrucciones — que igual tiene que pasar su propia prueba antes de poder activarse. No es entrenamiento: es una versión más del mismo mecanismo de versionado, ahora asistido.
+
+En Configuración podés habilitar "Permitir que busque en la web" (con Gemini): solo se usa cuando el pedido parece necesitar información actual y todo lo demás no alcanzó, y lo que encuentra se le devuelve al modelo local para que reconsidere antes de responder, no como respuesta directa. Está apagado por defecto porque cada búsqueda es una llamada paga adicional cuyo costo exacto (Google puede cobrar un cargo extra por búsqueda, además de los tokens) esta app no puede verificar automáticamente.
 
 ## Gemini opcional
 
 En **Configuración**, ingresá la clave, elegí un modelo, verificá sus tarifas oficiales y fijá los topes por pedido y mensual. Cada pedido requiere además marcar **Permitir asistencia externa si hace falta**. El programa envía a Google el pedido, las instrucciones y el contexto seleccionado cuando necesita asistencia. Un archivo corto puede quedar incluido completo. No hay anonimización automática ni búsqueda web en esta entrega.
 
 Antes de generar se cuentan tokens y se reserva presupuesto; si una conexión queda en estado incierto, se conserva la reserva y no se repite automáticamente esa llamada. El registro depende de las tarifas configuradas y no reemplaza los límites de facturación de Google ni contabiliza otros programas. La integración autenticada con una cuenta real de Gemini todavía no fue verificada. [Tarifas oficiales](https://ai.google.dev/gemini-api/docs/pricing).
+
+## Integrarlo con otro programa
+
+En **Configuración → Integraciones**, generá una clave (`iqk_...`) para que otro programa tuyo en esta misma computadora — un script, una automatización, un flujo en una herramienta como n8n — le mande pedidos al cerebro y reciba ya la decisión tomada (si lo resolvió solo o si hizo falta escalar), sin depender del token de sesión de la interfaz. El endpoint es `POST /api/integration/ask` con el header `X-IQ-Api-Key`; sigue restringido a esta computadora, no expone nada a la red.
+
+`integrations/asistente_email.py` es un conector de referencia completo: lee correos nuevos por IMAP, le manda cada uno al cerebro, y arma un borrador de respuesta en la carpeta de Borradores del propio buzón — nunca envía nada automáticamente, siempre queda para que una persona lo revise y lo mande ella misma. Copiá `integrations/config.example.json` a `config.json`, completá tus datos y la clave de integración, y corré `python integrations/asistente_email.py --config integrations/config.json`. El mismo patrón (`ask_brain()` + nunca actuar sin revisión humana) sirve de plantilla para conectar WhatsApp, un sistema de tickets o un CRM.
 
 ## Datos y respaldo
 
