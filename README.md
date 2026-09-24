@@ -11,6 +11,14 @@ IA Cuantitativa es un asistente de IA que corre **en tu computadora**, pensado p
 
 ![Pantalla principal de IA Cuantitativa](docs/hero.png)
 
+## La posta
+
+Las pymes no se pueden dar el lujo de pagar un producto cloud de IA, ni de tener un ingeniero atrás arreglándolo. Esa es la idea que tuve, y la construí vibecodeando con Claude.
+
+Sí, está hecho con IA. Pero no fue "pedí un prompt y listo": lo probé contra modelos reales corriendo en mi máquina (no solo simulados), aparecieron bugs de verdad — un modelo se quedaba pensando para siempre y nunca contestaba, otro ignoraba instrucciones cortas si no se le pedía razonar — y se corrigieron en vivo, reproducidos y confirmados antes de darlos por resueltos. Armé hasta un conector real que lee correos y arma borradores de respuesta. 97 tests automáticos, CI corriendo en cada cambio, todo en este mismo repo para quien quiera revisarlo.
+
+Para mí la habilidad hoy pasa bastante por ahí: dirigir, entender y verificar — no solo aceptar lo primero que sale.
+
 ## Qué hace bien
 
 - **Razona cuando hace falta, no siempre igual.** Un saludo o un cálculo se resuelven al instante, sin tocar el modelo. Un pedido que compara, justifica o encuentra contradicciones activa razonamiento extendido antes de responder.
